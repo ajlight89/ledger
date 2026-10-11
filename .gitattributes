@@ -1,0 +1,4 @@
+# Let Git detect text files and normalize their line endings.
+# Text files are stored with LF in the repository and checked out
+# with the platform's native ending (CRLF on Windows).
+* text=auto
