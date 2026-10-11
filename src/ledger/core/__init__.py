@@ -1,0 +1,1 @@
+"""Core logic: domain classes and the Ledger service. Has no GUI imports, so it can be tested on its own."""
