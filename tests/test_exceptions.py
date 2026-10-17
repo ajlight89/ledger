@@ -4,10 +4,13 @@ import unittest
 
 from ledger.core.exceptions import (
     CurrencyMismatchError,
+    InsufficientFundsError,
+    InvalidAccountSettingError,
     InvalidAmountError,
     InvalidCurrencyError,
     LedgerError,
 )
+from ledger.core.money import Money
 
 
 class ExceptionHierarchyTest(unittest.TestCase):
@@ -19,6 +22,8 @@ class ExceptionHierarchyTest(unittest.TestCase):
             InvalidAmountError,
             InvalidCurrencyError,
             CurrencyMismatchError,
+            InvalidAccountSettingError,
+            InsufficientFundsError,
         ):
             with self.subTest(error_class=error_class.__name__):
                 self.assertTrue(issubclass(error_class, LedgerError))
@@ -31,3 +36,8 @@ class ExceptionHierarchyTest(unittest.TestCase):
         err = CurrencyMismatchError("USD", "EUR")
         self.assertEqual(str(err), "Cannot combine USD with EUR")
         self.assertEqual((err.left, err.right), ("USD", "EUR"))
+
+    def test_insufficient_funds_message_and_attributes(self) -> None:
+        err = InsufficientFundsError(Money("50"), Money("20"))
+        self.assertEqual(str(err), "Cannot withdraw $50.00: only $20.00 is available")
+        self.assertEqual((err.requested, err.available), (Money("50"), Money("20")))
