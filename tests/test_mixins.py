@@ -109,7 +109,7 @@ class SavingsAccountTest(unittest.TestCase):
                 savings = SavingsAccount("Rainy day", Decimal(rate))
                 self.assertEqual(savings.interest_rate, Decimal(rate))
 
-    def test_rejectss_rates_outside_zero_to_one(self) -> None:
+    def test_rejects_rates_outside_zero_to_one(self) -> None:
         for bad in ("-0.01", "1.01", "4.5"):
             with self.subTest(bad=bad), self.assertRaises(InvalidAccountSettingError):
                 SavingsAccount("Rainy day", Decimal(bad))

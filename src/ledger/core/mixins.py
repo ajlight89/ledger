@@ -43,7 +43,7 @@ class InterestMixin:
             raise InvalidAccountSettingError(
                 f"Interest rate must be a Decimal such as Decimal('0.045'), not {rate!r}"
             )
-        if not Decimal(0) <= rate <=(1):
+        if not Decimal(0) <= rate <= Decimal(1):
             raise InvalidAccountSettingError(
                 f"Interest rate must be between 0 and 1 (0% to 100%), not {rate}"
             )
@@ -70,7 +70,7 @@ class OverdraftProtectionMixin:
     """Lets the balance go below zero, down to an overdraft limit.
     
     Provides ``available_funds()``, which Account declares abstract, so an
-    account using this mixin can withdraw its balance pluss the limit.
+    account using this mixin can withdraw its balance plus the limit.
     Relies on Account for ``balance`` and ``_check_limit()``.
     """
 

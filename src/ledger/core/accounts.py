@@ -44,7 +44,7 @@ class Account(ABC):
         """Accept non-empty text; surrounding spaces are removed."""
         if not isinstance(value, str) or not value.strip():
             raise InvalidAccountSettingError(
-                f"Account name must be non-empty test, not {value!r}"
+                f"Account name must be non-empty text, not {value!r}"
             )
         self._name: str = value.strip()
 
@@ -114,7 +114,7 @@ class Account(ABC):
     # ------ text representations --------------------------------------------
 
     def __repr__(self) -> str:
-        """Developer form: <CheckingAccount 'Eveeryday' balance=Money('0.00', 'USD')>."""
+        """Developer form: <CheckingAccount 'Everyday' balance=Money('0.00', 'USD')>."""
         return f"<{type(self).__name__} {self.name!r} balance={self.balance!r}>"
 
     def __str__(self) -> str:

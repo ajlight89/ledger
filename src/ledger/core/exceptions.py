@@ -1,4 +1,4 @@
-"""Exception hieracrchy for Ledger's core package.
+"""Exception hierarchy for Ledger's core package.
 
 Every error that Ledger raises on purpose derives from LedgerError, so a
 caller (the GUI, a test, a script) can catch all of Ledger's own errors
@@ -25,7 +25,8 @@ class InvalidAmountError(LedgerError):
     """A value cannot be used as an amount of money.
 
     Raised for the wrong type (Example: float), text that is not a
-    number, or a non-finite Decimal such as NaN or Infinity.
+    number, or a non-finite Decimal such as NaN or Infinity. Accounts
+    also raise it for an amount of zero or less.
     """
 
 
