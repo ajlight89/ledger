@@ -10,6 +10,7 @@ and withdraw(), which validate the amount first.
 """
 
 from abc import ABC, abstractmethod
+from decimal import Decimal
 
 from ledger.core.exceptions import (
     CurrencyMismatchError,
@@ -17,6 +18,7 @@ from ledger.core.exceptions import (
     InvalidAccountSettingError,
     InvalidAmountError,
 )
+from ledger.core.mixins import InterestMixin, OverdraftProtectionMixin
 from ledger.core.money import Money
 
 
@@ -120,6 +122,50 @@ class Account(ABC):
         return f"{self.name} ({self.account_type}): {self.balance}"
 
 
+class CheckingAccount(OverdraftProtectionMixin, Account):
+    """An everyday account. The overdraft limit defaults to zero (no overdraft).
+    
+    available_funds() comes from OverdraftProtectionMixin, which is found
+    before Account in the method resolution order.
+    """
+
+    def __init__(
+            self,
+            name: str,
+            overdraft_limit: Money | None = None,
+            currency: str = "USD",
+    ) -> None:
+        super().__init__(name, currency)
+        if overdraft_limit is None:
+            overdraft_limit = Money(0, self.currency)
+        self.overdraft_limit = overdraft_limit  # validated by the mixin's setter
+
+    @property
+    def account_type(self) -> str:
+        return "Checking"
+
+
+class SavingsAccount(InterestMixin, Account):
+    """A savings account that earns interest and cannot go below zero."""
+
+    def __init__(
+            self,
+            name: str,
+            interest_rate: Decimal,
+            currency: str = "USD",
+    ) -> None:
+        super().__init__(name, currency)
+        self.interest_rate = interest_rate  # validated by the mixin's setter
+
+    @property
+    def account_type(self) -> str:
+        return "Savings"
+
+    def available_funds(self) -> Money:
+        """The balance: a savings account cannot be overdrawn."""
+        return self.balance
+
+    
 class CreditCardAccount(Account):
     """A credit card. Spending is allowed until the amount owed reaches the credit limit."""
 
