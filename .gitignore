@@ -1,0 +1,20 @@
+# Virtual environment
+.venv/
+
+# Python bytecode
+__pycache__/
+*.py[cod]
+
+# PyInstaller build output
+build/
+dist/
+*.spec
+
+# Editor and OS files
+.vscode/
+Thumbs.db
+
+# Real financial data never goes in the repo; sample.csv holds fake rows only
+/*.csv
+!/sample.csv
+*.json
