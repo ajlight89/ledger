@@ -5,15 +5,18 @@ import unittest
 from contextlib import redirect_stdout
 from datetime import date
 from decimal import Decimal
+from pathlib import Path
 from unittest.mock import patch
 
 from ledger import cli
-from ledger.core.accounts import CheckingAccount
+from ledger.core.accounts import CheckingAccount, CreditCardAccount
 from ledger.core.book import Book
 from ledger.core.categories import Category
+from ledger.core.exceptions import CsvFormatError
 from ledger.core.money import Money
 
 OPENED = date(2026, 10, 1)
+SAMPLE = Path(__file__).parent.parent / "sample.csv"
 
 
 def run(func, answers, *args):
@@ -79,6 +82,50 @@ class TestMenuActions(unittest.TestCase):
         self.save.assert_called_once()
 
 
+class TestTransferRenameImport(unittest.TestCase):
+    """Transfers, renaming and CSV import from the menu."""
+
+    def setUp(self) -> None:
+        self.book = Book()
+        self.checking = self.book.add_account(CheckingAccount("Everyday", OPENED))
+        self.card = self.book.add_account(
+            CreditCardAccount("Visa", OPENED, credit_limit=Money(500))
+        )
+        self.checking.deposit(Money(100), OPENED, Category.INCOME, "Paycheck")
+        patcher = patch("ledger.cli.storage.save_book")
+        self.save = patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def test_transfer_pays_the_card_and_saves(self) -> None:
+        run(cli.transfer, ["1", "2", "40", "", "Card payment"], self.book)
+        self.assertEqual(self.checking.balance, Money(60))
+        self.assertEqual(self.card.balance, Money(40))
+        self.save.assert_called_once()
+
+    def test_transfer_too_much_then_give_up_changes_nothing(self) -> None:
+        answers = ["1", "2", "500", "", "Card payment", "n"]
+        _, printed = run(cli.transfer, answers, self.book)
+        self.assertEqual(self.checking.balance, Money(100))
+        self.assertEqual(self.card.balance, Money(0))
+        self.assertIn("Nothing was recorded.", printed)
+        self.save.assert_not_called()
+
+    def test_rename_asks_again_when_the_name_is_taken(self) -> None:
+        _, printed = run(cli.rename_account, ["1", "visa", "Bills"], self.book)
+        self.assertEqual(self.checking.name, "Bills")
+        self.assertIn("already exists", printed)
+
+    def test_import_adds_the_sample_rows_and_saves(self) -> None:
+        run(cli.import_transactions, ["1", f'"{SAMPLE}"'], self.book)
+        self.assertEqual(len(self.checking.transactions), 16)
+        self.save.assert_called_once()
+
+    def test_import_of_a_missing_file_is_refused(self) -> None:
+        with self.assertRaises(CsvFormatError):
+            run(cli.import_transactions, ["1", "no_such_file.csv"], self.book)
+        self.save.assert_not_called()
+
+
 class TestMain(unittest.TestCase):
     """The menu loop keeps going after a bad choice or a refused action."""
 
@@ -87,7 +134,7 @@ class TestMain(unittest.TestCase):
     def test_bad_choice_and_refused_action_return_to_the_menu(
         self, _load, _logging
     ) -> None:
-        _, printed = run(cli.main, ["7", "3", "q"])
+        _, printed = run(cli.main, ["x", "3", "q"])
         self.assertIn("Please choose one of the numbers shown", printed)
         self.assertIn("There are no accounts yet", printed)
         self.assertIn("Goodbye.", printed)
