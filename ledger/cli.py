@@ -10,7 +10,7 @@ from datetime import date, datetime
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
 
-from ledger.core import importer, storage
+from ledger.core import importer, reports, storage
 from ledger.core.accounts import (
     Account,
     CheckingAccount,
@@ -139,6 +139,23 @@ def record_transaction(method) -> Money | None:
             if not ask_yes_no("Try a different amount? (y/n): "):
                 return None
             amount = ask_money("Amount: ")
+
+
+def ask_month(prompt: str) -> tuple[int, int]:
+    """Ask until the user types a month as MM/YYYY; blank means this month.
+
+    Returns (year, month), such as (2026, 10).
+    """
+    while True:
+        text = input(prompt).strip()
+        if not text:
+            today = date.today()
+            return today.year, today.month
+        try:
+            day = datetime.strptime(text, "%m/%Y")
+            return day.year, day.month
+        except ValueError:
+            print(f"'{text}' is not a month like 10/2026")
 
 
 # ----- Menu actions: each takes the book as its only argument. -----
@@ -276,6 +293,42 @@ def import_transactions(book: Book) -> None:
     print(f"{account.name} balance: {account.balance}")
 
 
+def show_statement(book: Book) -> None:
+    """Print one account's transactions for a month with a running balance."""
+    account = choose_account(book, "Statement for account number: ")
+    year, month = ask_month("Month (MM/YYYY, blank for this month): ")
+    opening = reports.opening_balance(account, year, month)
+    print(f"\n{account.name}: {date(year, month, 1):%B %Y}")
+    print(f"Opening balance: {opening}")
+    print(f"{'Date':<10}  {'Description':<30}  {'Amount':>12}  {'Balance':>12}")
+    closing = opening
+    count = 0
+    for line in reports.statement_lines(account, year, month):
+        print(
+            f"{line.date:%m/%d/%Y}  {line.description:<30.30}  "
+            f"{line.amount!s:>12}  {line.balance!s:>12}"
+        )
+        closing = line.balance
+        count += 1
+    if count == 0:
+        print("No transactions this month.")
+    print(f"Closing balance: {closing}")
+
+
+def show_spending(book: Book) -> None:
+    """Print how much was spent in each category in a month, largest first."""
+    year, month = ask_month("Month (MM/YYYY, blank for this month): ")
+    totals = reports.spending_by_category(book, year, month)
+    print(f"\nSpending for {date(year, month, 1):%B %Y}")
+    if not totals:
+        print("No spending this month.")
+        return
+    for category, amount in totals.items():
+        print(f"{category!s:<20}  {amount!s:>12}")
+    total = sum(totals.values(), Money.zero())
+    print(f"{'Total':<20}  {total!s:>12}")
+
+
 # Menu key -> (label shown in the menu, function that does the work).
 # Every action function takes the book as its only argument.
 ACTIONS = {
@@ -286,6 +339,8 @@ ACTIONS = {
     "5": ("Transfer", transfer),
     "6": ("Rename account", rename_account),
     "7": ("Import CSV file", import_transactions),
+    "8": ("Monthly statement", show_statement),
+    "9": ("Spending by category", show_spending),
 }
 
 

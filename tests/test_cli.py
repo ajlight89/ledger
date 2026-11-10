@@ -9,6 +9,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from ledger import cli
+from ledger.core import importer
 from ledger.core.accounts import CheckingAccount, CreditCardAccount
 from ledger.core.book import Book
 from ledger.core.categories import Category
@@ -124,6 +125,36 @@ class TestTransferRenameImport(unittest.TestCase):
         with self.assertRaises(CsvFormatError):
             run(cli.import_transactions, ["1", "no_such_file.csv"], self.book)
         self.save.assert_not_called()
+
+
+class TestReports(unittest.TestCase):
+    """The statement and spending reports print the sample month correctly."""
+
+    def setUp(self) -> None:
+        self.book = Book()
+        checking = self.book.add_account(CheckingAccount("Everyday", OPENED))
+        importer.import_csv(checking, SAMPLE)
+
+    def test_ask_month_asks_again_and_blank_means_this_month(self) -> None:
+        (year, month), printed = run(cli.ask_month, ["13/2026", ""], "Month: ")
+        self.assertEqual((year, month), (date.today().year, date.today().month))
+        self.assertIn("is not a month", printed)
+
+    def test_statement_shows_rows_and_the_closing_balance(self) -> None:
+        _, printed = run(cli.show_statement, ["1", "10/2026"], self.book)
+        self.assertIn("Opening balance: $0.00", printed)
+        self.assertIn("MAPLE APTS RENT", printed)
+        self.assertIn("Closing balance: $1,460.65", printed)
+
+    def test_statement_for_an_empty_month_says_so(self) -> None:
+        _, printed = run(cli.show_statement, ["1", "09/2026"], self.book)
+        self.assertIn("No transactions this month.", printed)
+
+    def test_spending_lists_the_largest_category_first_with_a_total(self) -> None:
+        _, printed = run(cli.show_spending, ["10/2026"], self.book)
+        lines = printed.splitlines()
+        self.assertTrue(lines[2].startswith("Housing"))
+        self.assertIn("$1,439.35", lines[-1])
 
 
 class TestMain(unittest.TestCase):
