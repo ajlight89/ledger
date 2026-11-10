@@ -8,8 +8,9 @@ prints its message and the menu keeps going.
 import logging
 from datetime import date, datetime
 from decimal import Decimal, InvalidOperation
+from pathlib import Path
 
-from ledger.core import storage
+from ledger.core import importer, storage
 from ledger.core.accounts import (
     Account,
     CheckingAccount,
@@ -30,6 +31,9 @@ from ledger.core.exceptions import (
 from ledger.core.money import Money
 
 LOG_PATH = storage.DATA_PATH.parent / "ledger.log"
+
+# Refusals about the amount itself; the user may try a different amount.
+AMOUNT_ERRORS = (InvalidAmountError, InsufficientFundsError, CreditLimitExceededError)
 
 
 # ----- Input helpers: each one asks again until the answer is usable. -----
@@ -96,12 +100,12 @@ def ask_date(prompt: str) -> date:
             print(f"'{text}' is not a date like 11/10/2026.")
 
 
-def choose_account(book: Book) -> Account:
+def choose_account(book: Book, prompt: str = "Account number: ") -> Account:
     """List the accounts and return the one the user picks by number."""
     if not book.accounts:
         raise AccountNotFoundError("There are no accounts yet. Open one first.")
     list_accounts(book)
-    number = ask_number("Account number: ", len(book.accounts))
+    number = ask_number(prompt, len(book.accounts))
     return book.accounts[number - 1]
 
 
@@ -130,11 +134,7 @@ def record_transaction(method) -> Money | None:
         try:
             method(amount, on, category, description)
             return amount
-        except (
-            InvalidAmountError,
-            InsufficientFundsError,
-            CreditLimitExceededError,
-        ) as err:
+        except AMOUNT_ERRORS as err:
             print(err)
             if not ask_yes_no("Try a different amount? (y/n): "):
                 return None
@@ -226,6 +226,56 @@ def withdraw(book: Book) -> None:
     print(f"Withdrew {amount}. {account.name} balance: {account.balance}")
 
 
+def transfer(book: Book) -> None:
+    """Move money between two accounts, such as paying a credit card."""
+    if len(book.accounts) < 2:
+        raise ValidationError("A transfer needs at least two accounts.")
+    source = choose_account(book, "From account number: ")
+    destination = choose_account(book, "To account number: ")
+    amount = ask_money("Amount: ")
+    on = ask_date("Date (MM/DD/YYYY, blank for today): ")
+    description = ask_text("Description: ")
+    while True:
+        try:
+            book.transfer(amount, source.id, destination.id, on, description)
+            break
+        except AMOUNT_ERRORS as err:
+            print(err)
+            if not ask_yes_no("Try a different amount? (y/n): "):
+                print("Nothing was recorded.")
+                return
+            amount = ask_money("Amount: ")
+    storage.save_book(book)
+    print(f"Moved {amount} from {source.name} to {destination.name}.")
+
+
+def rename_account(book: Book) -> None:
+    """Give an account a new name, asking again if another account has it."""
+    account = choose_account(book, "Account to rename: ")
+    while True:
+        try:
+            book.rename_account(account.id, ask_text("New name: "))
+            break
+        except DuplicateAccountError as err:
+            print(err)
+    storage.save_book(book)
+    print(f"Renamed to {account.name}.")
+
+
+def import_transactions(book: Book) -> None:
+    """Add the rows of a bank CSV file to an account."""
+    account = choose_account(book, "Import into account number: ")
+    # Windows "Copy as path" puts quotes around the path; remove them.
+    path = Path(ask_text("CSV file path: ").strip('"'))
+    added = importer.import_csv(account, path)
+    if not added:
+        print("No new transactions; every row was already in the account.")
+        return
+    storage.save_book(book)
+    print(f"Imported {len(added)} transactions.")
+    print(f"{account.name} balance: {account.balance}")
+
+
 # Menu key -> (label shown in the menu, function that does the work).
 # Every action function takes the book as its only argument.
 ACTIONS = {
@@ -233,6 +283,9 @@ ACTIONS = {
     "2": ("Open account", open_account),
     "3": ("Deposit", deposit),
     "4": ("Withdraw", withdraw),
+    "5": ("Transfer", transfer),
+    "6": ("Rename account", rename_account),
+    "7": ("Import CSV file", import_transactions),
 }
 
 
