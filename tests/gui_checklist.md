@@ -69,3 +69,25 @@ Use throwaway account names such as "GUI Test".
 - [ ] Name clash: after archiving a $0.00 account and opening a new one with the
       same name, restoring the old one offers a new name. No leaves it archived;
       a name in use is refused with the dialog left open; a free name restores it.
+
+## Import CSV
+
+- [ ] With no row selected, Import CSV shows "Select an account in the list first."
+- [ ] The Windows Open window lists CSV files first; Cancel changes nothing.
+- [ ] Importing `sample.csv` into a test account reports 15 transactions and
+      updates the balance.
+- [ ] Importing the same file again reports no new transactions.
+- [ ] A file without the Date, Description and Amount columns is refused.
+
+## Statement and spending
+
+- [ ] Statement and Spending stay available in the archived view.
+- [ ] The month starts as this month, highlighted; a month such as `13/2026`
+      or `abc` is refused with the dialog left open.
+- [ ] A statement shows the opening balance, one line per transaction with a
+      running balance, and the closing balance; the columns line up.
+- [ ] A statement opens for an archived account.
+- [ ] Spending lists categories largest first, with a total; a month with no
+      spending says so.
+- [ ] Esc and Close shut a report; two reports can stay open while the main
+      window keeps working.

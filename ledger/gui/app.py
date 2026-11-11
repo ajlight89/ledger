@@ -5,11 +5,12 @@ from abc import ABC, abstractmethod
 from datetime import date, datetime
 from decimal import Decimal, InvalidOperation
 from functools import wraps
-from tkinter import messagebox, ttk
+from pathlib import Path
+from tkinter import filedialog, messagebox, ttk
 from uuid import UUID
 
 from ledger.cli import setup_logging
-from ledger.core import storage
+from ledger.core import importer, reports, storage
 from ledger.core.accounts import CheckingAccount, CreditCardAccount, SavingsAccount
 from ledger.core.book import Book
 from ledger.core.categories import Category
@@ -61,6 +62,27 @@ def parse_date(text: str) -> date:
         raise ValidationError(f"'{cleaned}' is not a date like 11/10/2026.") from err
 
 
+def parse_month(text: str) -> tuple[int, int]:
+    """Turn MM/YYYY text into (year, month); blank means this month."""
+    cleaned = text.strip()
+    if not cleaned:
+        today = date.today()
+        return today.year, today.month
+    try:
+        day = datetime.strptime(cleaned, "%m/%Y")
+    except ValueError as err:
+        raise ValidationError(f"'{cleaned}' is not a month like 10/2026.") from err
+    return day.year, day.month
+
+
+def center_over(window: tk.Toplevel, parent: tk.Misc) -> None:
+    """Move window to the middle of the parent window."""
+    window.update_idletasks()  # let Tk work out the window's size first
+    x = parent.winfo_rootx() + (parent.winfo_width() - window.winfo_reqwidth()) // 2
+    y = parent.winfo_rooty() + (parent.winfo_height() - window.winfo_reqheight()) // 2
+    window.geometry(f"+{x}+{y}")
+
+
 def shows_errors(method):
     """Decorator for LedgerApp button handlers: show a LedgerError in a message box.
 
@@ -109,6 +131,7 @@ class LedgerApp:
             ("Transfer", self.show_transfer),
             ("Rename", self.show_rename),
             ("Archive", self.show_archive),
+            ("Import CSV", self.show_import),
         ):
             button = ttk.Button(buttons, text=text, command=command)
             button.pack(side="left", padx=(0, 5))
@@ -116,6 +139,15 @@ class LedgerApp:
         self.restore_button = ttk.Button(
             buttons, text="Restore", command=self.show_restore
         )
+
+        # Reports work in both views (statements for archived accounts too).
+        ttk.Button(buttons, text="Statement", command=self.show_statement).pack(
+            side="left", padx=(0, 5)
+        )
+        ttk.Button(buttons, text="Spending", command=self.show_spending).pack(
+            side="left", padx=(0, 5)
+        )
+
         self.restore_button.pack(side="left", padx=(0, 5))
         ttk.Button(buttons, text="Exit", command=root.destroy).pack(side="right")
 
@@ -241,6 +273,44 @@ class LedgerApp:
             if messagebox.askyesno("Ledger", question, parent=self.root):
                 RestoreDialog(self, account)
 
+    @shows_errors
+    def show_import(self) -> None:
+        """Pick a CSV file and import its rows into the selected account."""
+        account = self.selected_account()
+        path = filedialog.askopenfilename(
+            parent=self.root,
+            title=f"Import into {account.name}",
+            filetypes=[("CSV files", "*.csv"), ("All files", "*.*")],
+        )
+        if not path:  # Cancel returns an empty string
+            return
+        count = self.import_csv(account, Path(path))
+        if count:
+            message = f"Imported {count} transactions into {account.name}."
+        else:
+            message = "No new transactions; every row was already in the account."
+        messagebox.showinfo("Ledger", message, parent=self.root)
+
+    @shows_errors
+    def show_statement(self) -> None:
+        """Ask for a month, then show the selected account's statement."""
+        account = self.selected_account()
+        title = f"Statement: {account.name}"
+
+        def show(year: int, month: int) -> None:
+            ReportWindow(self.root, title, self.statement_text(account, year, month))
+
+        MonthDialog(self, title, show)
+
+    def show_spending(self) -> None:
+        """Ask for a month, then show spending by category."""
+
+        def show(year: int, month: int) -> None:
+            text = self.spending_text(year, month)
+            ReportWindow(self.root, "Spending by category", text)
+
+        MonthDialog(self, "Spending by category", show)
+
     def open_account(
         self, kind: str, name: str, overdraft: bool, rate_text: str, limit_text: str
     ) -> None:
@@ -317,6 +387,52 @@ class LedgerApp:
         storage.save_book(self.book)
         self.refresh()
 
+    def import_csv(self, account, path: Path) -> int:
+        """Import the file into the account, save if anything was added,
+        and return how many transactions were added."""
+        added = importer.import_csv(account, path)
+        if added:
+            storage.save_book(self.book)
+            self.refresh()
+        return len(added)
+
+    def statement_text(self, account, year: int, month: int) -> str:
+        """The account's statement for one month, as lines of text."""
+        opening = reports.opening_balance(account, year, month)
+        lines = [
+            f"{account.name}: {date(year, month, 1):%B %Y}",
+            f"Opening balance: {opening}",
+            "",
+            f"{'Date':<10}  {'Description':<30}  {'Amount':>12}  {'Balance':>12}",
+        ]
+        closing = opening
+        count = 0
+        for line in reports.statement_lines(account, year, month):
+            lines.append(
+                f"{line.date:%m/%d/%Y}  {line.description:<30.30}  "
+                f"{line.amount!s:>12}  {line.balance!s:>12}"
+            )
+            closing = line.balance
+            count += 1
+        if count == 0:
+            lines.append("No transactions this month.")
+        lines.append("")
+        lines.append(f"Closing balance: {closing}")
+        return "\n".join(lines)
+
+    def spending_text(self, year: int, month: int) -> str:
+        """Spending in each category for one month, largest first, as text."""
+        totals = reports.spending_by_category(self.book, year, month)
+        lines = [f"Spending for {date(year, month, 1):%B %Y}", ""]
+        if not totals:
+            lines.append("No spending this month.")
+            return "\n".join(lines)
+        for category, amount in totals.items():
+            lines.append(f"{category!s:<20}  {amount!s:>12}")
+        total = sum(totals.values(), Money.zero())
+        lines.append(f"{'Total':<20}  {total!s:>12}")
+        return "\n".join(lines)
+
 
 class Dialog(tk.Toplevel, ABC):
     """A small window with OK and Cancel. Subclasses add fields and the action.
@@ -345,18 +461,11 @@ class Dialog(tk.Toplevel, ABC):
         self.bind("<Return>", lambda event: self.ok())
         self.bind("<Escape>", lambda event: self.destroy())
 
-        self.center_over(app.root)
+        center_over(self, app.root)
         self.deiconify()
 
         self.wait_visibility()  # a window must be showing before it can grab
         self.grab_set()  # the main window ignores clicks until this closes
-
-    def center_over(self, parent: tk.Misc) -> None:
-        """Move the dialog to the middle of the parent window."""
-        self.update_idletasks()  # let Tk work out the dialog's size first
-        x = parent.winfo_rootx() + (parent.winfo_width() - self.winfo_reqwidth()) // 2
-        y = parent.winfo_rooty() + (parent.winfo_height() - self.winfo_reqheight()) // 2
-        self.geometry(f"+{x}+{y}")
 
     def add_row(self, row: int, label: str, widget: ttk.Widget) -> None:
         """Put a label in column 0 and the widget in column 1 of the row."""
@@ -586,6 +695,61 @@ class RestoreDialog(RenameDialog):
 
     def submit(self) -> None:
         self.app.restore_account(self.account, self.name_var.get())
+
+
+class MonthDialog(Dialog):
+    """Ask for a month, then call on_month(year, month) with it."""
+
+    def __init__(self, app: LedgerApp, title: str, on_month) -> None:
+        self.on_month = on_month
+        super().__init__(app, title)
+
+    def build(self) -> None:
+        self.month_var = tk.StringVar(value=f"{date.today():%m/%Y}")
+        month_entry = ttk.Entry(self.body, textvariable=self.month_var, width=12)
+        self.add_row(0, "Month (MM/YYYY):", month_entry)
+        month_entry.focus_set()
+        month_entry.select_range(0, "end")
+
+    def submit(self) -> None:
+        year, month = parse_month(self.month_var.get())
+        self.on_month(year, month)
+
+
+class ReportWindow(tk.Toplevel):
+    """A read-only window that shows a report in a fixed-width font."""
+
+    def __init__(self, parent: tk.Misc, title: str, text: str) -> None:
+        super().__init__(parent)
+        self.withdraw()  # stay hidden until it has been placed
+        self.title(title)
+        self.transient(parent)
+
+        ttk.Button(self, text="Close", command=self.destroy).pack(
+            side="bottom", anchor="e", padx=10, pady=10
+        )
+        # Consolas gives every character the same width, so f-string
+        # column widths line up as they do in the terminal.
+        box = tk.Text(
+            self,
+            font=("Consolas", 10),
+            wrap="none",
+            width=80,
+            height=24,
+            padx=10,
+            pady=10,
+        )
+        scrollbar = ttk.Scrollbar(self, command=box.yview)
+        box.configure(yscrollcommand=scrollbar.set)
+        scrollbar.pack(side="right", fill="y")
+        box.pack(fill="both", expand=True)
+        box.insert("1.0", text)
+        box.configure(state="disabled")  # read-only
+        self.bind("<Escape>", lambda event: self.destroy())
+
+        center_over(self, parent)
+        self.deiconify()
+        self.focus_set()
 
 
 def main() -> None:
