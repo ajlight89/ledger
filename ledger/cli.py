@@ -6,6 +6,7 @@ prints its message and the menu keeps going.
 """
 
 import logging
+import sys
 from datetime import date, datetime
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
@@ -31,6 +32,20 @@ from ledger.core.exceptions import (
 from ledger.core.money import Money
 
 LOG_PATH = storage.DATA_PATH.parent / "ledger.log"
+
+# ANSI escape codes: bright green text, then back to the terminal's normal colors.
+GREEN = "\033[92m"
+RESET = "\033[0m"
+
+BANNER = r"""
+ _      _____ ____   ____ _____ ____
+| |    | ____|  _ \ / ___| ____|  _ \
+| |    |  _| | | | | |  _|  _| | |_) |
+| |___ | |___| |_| | |_| | |___|  _ <
+|_____||_____|____/ \____|_____|_| \_\
+
+      Personal finance, kept offline.
+"""
 
 # Refusals about the amount itself; the user may try a different amount.
 AMOUNT_ERRORS = (InvalidAmountError, InsufficientFundsError, CreditLimitExceededError)
@@ -415,7 +430,9 @@ def show_menu() -> None:
     for key, (label, _action) in ACTIONS.items():
         print(f"{key:>2}. {label}")
     print(" Q. Quit")
+    print()
     print("Press Ctrl+C at any prompt to return to this menu.")
+    print()
 
 
 def setup_logging() -> None:
@@ -429,6 +446,18 @@ def setup_logging() -> None:
 
 
 def main() -> None:
+    """Run the menu, in green when the output is a real terminal."""
+    use_color = sys.stdout.isatty()
+    if use_color:
+        print(GREEN, end="")
+    try:
+        run_menu()
+    finally:
+        if use_color:
+            print(RESET, end="")
+
+
+def run_menu() -> None:
     """Load the book, post any interest due, then run the menu until Quit."""
     setup_logging()
 
@@ -440,11 +469,11 @@ def main() -> None:
         print(err)
         return
 
-    print("*--- Ledger ---*")
+    print(BANNER)
     while True:
         show_menu()
         try:
-            choice = input("Choose: ").strip().upper()
+            choice = input("Please select an option: ").strip().upper()
         except KeyboardInterrupt:
             print()
             break
