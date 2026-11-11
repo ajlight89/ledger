@@ -10,10 +10,10 @@ from unittest.mock import patch
 
 from ledger import cli
 from ledger.core import importer
-from ledger.core.accounts import CheckingAccount, CreditCardAccount
+from ledger.core.accounts import CheckingAccount, CreditCardAccount, SavingsAccount
 from ledger.core.book import Book
 from ledger.core.categories import Category
-from ledger.core.exceptions import CsvFormatError
+from ledger.core.exceptions import AccountNotEmptyError, CsvFormatError
 from ledger.core.money import Money
 
 OPENED = date(2026, 10, 1)
@@ -127,6 +127,65 @@ class TestTransferRenameImport(unittest.TestCase):
         self.save.assert_not_called()
 
 
+class TestArchive(unittest.TestCase):
+    """Archive and restore move accounts between lists; refusals save nothing."""
+
+    def setUp(self) -> None:
+        self.book = Book()
+        self.checking = self.book.add_account(CheckingAccount("Everyday", OPENED))
+        self.checking.deposit(Money(100), OPENED, Category.INCOME, "Paycheck")
+        self.savings = self.book.add_account(SavingsAccount("Old Savings", OPENED))
+        self.savings.deposit(Money(50), OPENED, Category.INCOME, "Gift")
+        self.savings.withdraw(Money(50), OPENED, Category.OTHER, "Closing out")
+        patcher = patch("ledger.cli.storage.save_book")
+        self.save = patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def test_archive_after_yes_moves_the_account_and_saves(self) -> None:
+        run(cli.archive_account, ["2", "y"], self.book)
+        self.assertEqual(self.book.archived_accounts, (self.savings,))
+        self.save.assert_called_once()
+
+    def test_archive_of_an_account_with_money_is_refused(self) -> None:
+        with self.assertRaises(AccountNotEmptyError):
+            run(cli.archive_account, ["1", "y"], self.book)
+        self.assertIn(self.checking, self.book.accounts)
+        self.save.assert_not_called()
+
+    def test_restore_asks_for_a_new_name_when_taken(self) -> None:
+        self.book.archive_account(self.savings.id)
+        self.book.add_account(SavingsAccount("Old Savings", OPENED))
+        run(cli.restore_account, ["1", "y", "Older Savings"], self.book)
+        self.assertIn(self.savings, self.book.accounts)
+        self.assertEqual(self.savings.name, "Older Savings")
+        self.save.assert_called_once()
+
+    def test_restore_then_give_up_keeps_the_old_name(self) -> None:
+        self.book.archive_account(self.savings.id)
+        self.book.add_account(SavingsAccount("Old Savings", OPENED))
+        _, printed = run(cli.restore_account, ["1", "y", "Everyday", "n"], self.book)
+        self.assertIn("stays archived", printed)
+        self.assertEqual(self.savings.name, "Old Savings")
+        self.assertIn(self.savings, self.book.archived_accounts)
+        self.save.assert_not_called()
+
+    def test_restore_then_ctrl_c_keeps_the_old_name(self) -> None:
+        self.book.archive_account(self.savings.id)
+        self.book.add_account(SavingsAccount("Old Savings", OPENED))
+        answers = ["1", "y", "Everyday", "y", KeyboardInterrupt()]
+        with self.assertRaises(KeyboardInterrupt):
+            run(cli.restore_account, answers, self.book)
+        self.assertEqual(self.savings.name, "Old Savings")
+        self.save.assert_not_called()
+
+    def test_statement_for_an_archived_account(self) -> None:
+        self.book.archive_account(self.savings.id)
+        _, printed = run(cli.show_statement, ["y", "1", "10/2026"], self.book)
+        self.assertIn("Old Savings: October 2026", printed)
+        self.assertIn("Closing out", printed)
+        self.assertIn("Closing balance: $0.00", printed)
+
+
 class TestReports(unittest.TestCase):
     """The statement and spending reports print the sample month correctly."""
 
@@ -168,6 +227,22 @@ class TestMain(unittest.TestCase):
         _, printed = run(cli.main, ["x", "3", "q"])
         self.assertIn("Please choose one of the numbers shown", printed)
         self.assertIn("There are no accounts yet", printed)
+        self.assertIn("Goodbye.", printed)
+
+    @patch("ledger.cli.setup_logging")
+    @patch("ledger.cli.storage.load_book", return_value=Book())
+    def test_ctrl_c_in_an_action_returns_to_the_menu(self, _load, _logging) -> None:
+        with patch("ledger.cli.storage.save_book") as save:
+            _, printed = run(cli.main, ["2", "1", KeyboardInterrupt(), "q"])
+        self.assertIn("Option 2 selected: Open account", printed)
+        self.assertIn("Back to the main menu. Nothing was changed.", printed)
+        self.assertIn("Goodbye.", printed)
+        save.assert_not_called()
+
+    @patch("ledger.cli.setup_logging")
+    @patch("ledger.cli.storage.load_book", return_value=Book())
+    def test_ctrl_c_at_the_main_menu_quits(self, _load, _logging) -> None:
+        _, printed = run(cli.main, [KeyboardInterrupt()])
         self.assertIn("Goodbye.", printed)
 
 

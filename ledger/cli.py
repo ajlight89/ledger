@@ -100,13 +100,24 @@ def ask_date(prompt: str) -> date:
             print(f"'{text}' is not a date like 11/10/2026.")
 
 
+def pick_from(accounts, prompt: str, empty_message: str) -> Account:
+    """Number the accounts and return the one the user picks.
+
+    accounts may be the active or the archived accounts. If there are none,
+    AccountNotFoundError is raised with empty_message.
+    """
+    if not accounts:
+        raise AccountNotFoundError(empty_message)
+    show_numbered(accounts)
+    number = ask_number(prompt, len(accounts))
+    return accounts[number - 1]
+
+
 def choose_account(book: Book, prompt: str = "Account number: ") -> Account:
-    """List the accounts and return the one the user picks by number."""
-    if not book.accounts:
-        raise AccountNotFoundError("There are no accounts yet. Open one first.")
-    list_accounts(book)
-    number = ask_number(prompt, len(book.accounts))
-    return book.accounts[number - 1]
+    """List the active accounts and return the one the user picks by number."""
+    return pick_from(
+        book.accounts, prompt, "There are no accounts yet. Open one first."
+    )
 
 
 def choose_category() -> Category:
@@ -161,13 +172,18 @@ def ask_month(prompt: str) -> tuple[int, int]:
 # ----- Menu actions: each takes the book as its only argument. -----
 
 
-def list_accounts(book: Book) -> None:
+def show_numbered(accounts) -> None:
     """Print each account with a number, its type and its balance."""
+    for number, account in enumerate(accounts, start=1):
+        print(f"{number}. {account.name} ({account.TYPE}): {account.balance}")
+
+
+def list_accounts(book: Book) -> None:
+    """Print the active accounts, numbered."""
     if not book.accounts:
         print("No accounts yet.")
         return
-    for number, account in enumerate(book.accounts, start=1):
-        print(f"{number}. {account.name} ({account.TYPE}): {account.balance}")
+    show_numbered(book.accounts)
 
 
 def set_interest_rate(account) -> None:
@@ -279,6 +295,44 @@ def rename_account(book: Book) -> None:
     print(f"Renamed to {account.name}.")
 
 
+def archive_account(book: Book) -> None:
+    """Move an account with a $0.00 balance to the archive, after a y/n check."""
+    account = choose_account(book, "Account to archive: ")
+    if not ask_yes_no(f"Archive {account.name}? It can be restored later. (y/n): "):
+        print("Nothing was changed.")
+        return
+    book.archive_account(account.id)
+    storage.save_book(book)
+    print(f"Archived {account.name}.")
+
+
+def restore_account(book: Book) -> None:
+    """Bring an archived account back, offering a new name if its name is taken."""
+    account = pick_from(
+        book.archived_accounts,
+        "Account to restore: ",
+        "There are no archived accounts.",
+    )
+    original_name = account.name
+    try:
+        while True:
+            try:
+                book.restore_account(account.id)
+                break
+            except DuplicateAccountError as err:
+                print(err)
+                if not ask_yes_no("Restore it under a different name? (y/n): "):
+                    account.name = original_name
+                    print("The account stays archived.")
+                    return
+                account.name = ask_text("New name: ")
+    except KeyboardInterrupt:
+        account.name = original_name
+        raise
+    storage.save_book(book)
+    print(f"Restored {account.name}.")
+
+
 def import_transactions(book: Book) -> None:
     """Add the rows of a bank CSV file to an account."""
     account = choose_account(book, "Import into account number: ")
@@ -295,7 +349,16 @@ def import_transactions(book: Book) -> None:
 
 def show_statement(book: Book) -> None:
     """Print one account's transactions for a month with a running balance."""
-    account = choose_account(book, "Statement for account number: ")
+    if book.archived_accounts and ask_yes_no(
+        "Statement for an archived account? (y/n): "
+    ):
+        account = pick_from(
+            book.archived_accounts,
+            "Statement for archived account number: ",
+            "There are no archived accounts.",
+        )
+    else:
+        account = choose_account(book, "Statement for account number: ")
     year, month = ask_month("Month (MM/YYYY, blank for this month): ")
     opening = reports.opening_balance(account, year, month)
     print(f"\n{account.name}: {date(year, month, 1):%B %Y}")
@@ -338,9 +401,11 @@ ACTIONS = {
     "4": ("Withdraw", withdraw),
     "5": ("Transfer", transfer),
     "6": ("Rename account", rename_account),
-    "7": ("Import CSV file", import_transactions),
-    "8": ("Monthly statement", show_statement),
-    "9": ("Spending by category", show_spending),
+    "7": ("Archive account", archive_account),
+    "8": ("Restore account", restore_account),
+    "9": ("Import CSV file", import_transactions),
+    "10": ("Monthly statement", show_statement),
+    "11": ("Spending by category", show_spending),
 }
 
 
@@ -348,8 +413,9 @@ def show_menu() -> None:
     """Print the menu choices."""
     print()
     for key, (label, _action) in ACTIONS.items():
-        print(f"{key}. {label}")
-    print("Q. Quit")
+        print(f"{key:>2}. {label}")
+    print(" Q. Quit")
+    print("Press Ctrl+C at any prompt to return to this menu.")
 
 
 def setup_logging() -> None:
@@ -377,17 +443,24 @@ def main() -> None:
     print("*--- Ledger ---*")
     while True:
         show_menu()
-        choice = input("Choose: ").strip().upper()
+        try:
+            choice = input("Choose: ").strip().upper()
+        except KeyboardInterrupt:
+            print()
+            break
         if choice == "Q":
             break
         if choice not in ACTIONS:
             print("Please choose one of the numbers shown, or Q.")
             continue
-        _label, action = ACTIONS[choice]
+        label, action = ACTIONS[choice]
+        print(f"Option {choice} selected: {label}  (Ctrl+C = back)")
         try:
             action(book)
         except LedgerError as err:
             print(err)
+        except KeyboardInterrupt:
+            print("\nBack to the main menu. Nothing was changed.")
     print("Goodbye.")
 
 

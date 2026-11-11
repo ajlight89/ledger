@@ -7,6 +7,7 @@ from ledger.core.accounts import Account, account_from_dict
 from ledger.core.categories import Category
 from ledger.core.decorators import logged, requires_positive_amount
 from ledger.core.exceptions import (
+    AccountNotEmptyError,
     AccountNotFoundError,
     DuplicateAccountError,
     ValidationError,
@@ -27,11 +28,18 @@ class Book:
         """Start an empty book."""
         # Accounts by id; a dict keeps the order they were added in.
         self._accounts = {}
+        # Archived accounts, also by id. They are kept, never deleted.
+        self._archived = {}
 
     @property
     def accounts(self) -> tuple[Account, ...]:
         """Every account, in the order it was added, as a read-only tuple."""
         return tuple(self._accounts.values())
+
+    @property
+    def archived_accounts(self) -> tuple[Account, ...]:
+        """Every archived account, in the order it was archived."""
+        return tuple(self._archived.values())
 
     @logged
     def add_account(self, account: Account) -> Account:
@@ -67,6 +75,43 @@ class Book:
         if existing is not None and existing is not account:
             raise self._duplicate_name_error(existing)
         account.name = new_name
+        return account
+
+    @logged
+    def archive_account(self, account_id: UUID) -> Account:
+        """Move an active account to the archive and return it.
+
+        Only an account with a zero balance can be archived, so no money is
+        hidden away. Its history is kept, and restore_account() brings it back.
+        """
+        account = self.get_account(account_id)
+        if account.balance != Money.zero():
+            raise AccountNotEmptyError(
+                f"{account.name} has a balance of {account.balance}. "
+                "Only an account with a $0.00 balance can be archived."
+            )
+        del self._accounts[account_id]
+        self._archived[account_id] = account
+        return account
+
+    @logged
+    def restore_account(self, account_id: UUID) -> Account:
+        """Move an archived account back to the active accounts and return it.
+
+        If an active account now uses the same name, DuplicateAccountError is
+        raised and the account stays archived.
+        """
+        try:
+            account = self._archived[account_id]
+        except KeyError as err:
+            raise AccountNotFoundError(
+                "That archived account could not be found."
+            ) from err
+        existing = self._find_by_name(account.name)
+        if existing is not None:
+            raise self._duplicate_name_error(existing)
+        del self._archived[account_id]
+        self._accounts[account_id] = account
         return account
 
     @logged
@@ -128,18 +173,25 @@ class Book:
 
     def to_dict(self) -> dict:
         """Turn the whole book into JSON-safe values."""
-        return {"accounts": [a.to_dict() for a in self._accounts.values()]}
+        return {
+            "accounts": [a.to_dict() for a in self._accounts.values()],
+            "archived": [a.to_dict() for a in self._archived.values()],
+        }
 
     @classmethod
     def from_dict(cls, data: dict) -> "Book":
         """Rebuild a book saved by to_dict().
 
         Accounts go through add_account(), so two with one name are refused
-        just as they would be in the app.
+        just as they would be in the app. Files saved before archiving existed
+        have no "archived" list, so an empty one is used.
         """
         book = cls()
         for saved in data["accounts"]:
             book.add_account(account_from_dict(saved))
+        for saved in data.get("archived", []):
+            account = account_from_dict(saved)
+            book._archived[account.id] = account
         return book
 
     def _find_by_name(self, name: str) -> Account | None:

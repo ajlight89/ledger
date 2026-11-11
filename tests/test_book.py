@@ -9,7 +9,11 @@ from pathlib import Path
 from ledger.core.accounts import CheckingAccount, CreditCardAccount, SavingsAccount
 from ledger.core.book import Book
 from ledger.core.categories import Category
-from ledger.core.exceptions import DuplicateAccountError, InsufficientFundsError
+from ledger.core.exceptions import (
+    AccountNotEmptyError,
+    DuplicateAccountError,
+    InsufficientFundsError,
+)
 from ledger.core.money import Money
 from ledger.core.storage import load_book, save_book
 
@@ -45,6 +49,26 @@ class TestBook(unittest.TestCase):
         self.assertEqual(len(self.checking.transactions), 1)
         self.assertEqual(len(self.savings.transactions), 0)
 
+    def test_an_account_with_money_cannot_be_archived(self) -> None:
+        with self.assertRaises(AccountNotEmptyError):
+            self.book.archive_account(self.checking.id)
+        self.assertIn(self.checking, self.book.accounts)
+
+    def test_archive_and_restore_move_the_account_between_lists(self) -> None:
+        self.book.archive_account(self.savings.id)
+        self.assertNotIn(self.savings, self.book.accounts)
+        self.assertIn(self.savings, self.book.archived_accounts)
+        self.book.restore_account(self.savings.id)
+        self.assertIn(self.savings, self.book.accounts)
+        self.assertEqual(self.book.archived_accounts, ())
+
+    def test_restore_is_refused_when_the_name_is_taken(self) -> None:
+        self.book.archive_account(self.savings.id)
+        self.book.add_account(SavingsAccount("savings", OPENED))
+        with self.assertRaises(DuplicateAccountError):
+            self.book.restore_account(self.savings.id)
+        self.assertIn(self.savings, self.book.archived_accounts)
+
 
 class TestSaveAndLoad(unittest.TestCase):
     """A book saved to a file loads back the same."""
@@ -72,3 +96,20 @@ class TestSaveAndLoad(unittest.TestCase):
             [(a.name, type(a), a.balance) for a in loaded.accounts],
             [(a.name, type(a), a.balance) for a in book.accounts],
         )
+
+    def test_an_archived_account_survives_a_round_trip(self) -> None:
+        book = Book()
+        old = book.add_account(CheckingAccount("Old Checking", OPENED))
+        book.archive_account(old.id)
+
+        with tempfile.TemporaryDirectory() as folder:
+            path = Path(folder) / "ledger.json"
+            save_book(book, path)
+            loaded = load_book(path)
+
+        self.assertEqual(loaded.accounts, ())
+        self.assertEqual([a.name for a in loaded.archived_accounts], ["Old Checking"])
+
+    def test_a_file_without_an_archived_list_still_loads(self) -> None:
+        book = Book.from_dict({"accounts": []})
+        self.assertEqual(book.archived_accounts, ())
