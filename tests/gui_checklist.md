@@ -42,3 +42,30 @@ Use throwaway account names such as "GUI Test".
 - [ ] A blank description is refused; a date such as `2026-11-05` is refused.
 - [ ] For a credit card, the dialog explains that a deposit is a payment
       and a withdrawal is a charge; a charge makes the balance more negative.
+
+## Transfer
+
+- [ ] With no row selected, From starts empty; OK with an empty account shows
+      "Choose both accounts."
+- [ ] With a row selected, From starts as that account and the cursor is on To.
+- [ ] The same account in From and To is refused.
+- [ ] An amount over the balance is refused; the dialog stays open.
+- [ ] A valid transfer updates both rows.
+
+## Rename
+
+- [ ] The current name starts highlighted, so typing replaces it.
+- [ ] A name already in use (in any capitals) or a blank name is refused.
+
+## Archive and restore
+
+- [ ] "Show archived accounts" switches the list; every button except Restore
+      and Exit is grayed out. Unticking reverses this.
+- [ ] Restore is grayed out in the normal view.
+- [ ] Archive asks yes/no first; No changes nothing.
+- [ ] Archiving an account that is not $0.00 (including a card that owes) is refused.
+- [ ] A $0.00 account moves to the archived view.
+- [ ] Restore brings it back to the normal view.
+- [ ] Name clash: after archiving a $0.00 account and opening a new one with the
+      same name, restoring the old one offers a new name. No leaves it archived;
+      a name in use is refused with the dialog left open; a free name restores it.

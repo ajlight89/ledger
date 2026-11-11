@@ -10,6 +10,7 @@ from ledger.core.accounts import CheckingAccount, CreditCardAccount, SavingsAcco
 from ledger.core.book import Book
 from ledger.core.categories import Category
 from ledger.core.exceptions import (
+    AccountNotEmptyError,
     DuplicateAccountError,
     InsufficientFundsError,
     InvalidAmountError,
@@ -159,6 +160,98 @@ class TestDepositWithdraw(GuiTestCase):
     def test_blank_description_is_refused(self):
         with self.assertRaises(ValidationError):
             self.app.record_transaction(self.checking.deposit, "5", "", "Income", "  ")
+        self.save.assert_not_called()
+
+
+class TestTransferRename(GuiTestCase):
+    def test_transfer_moves_money_and_saves(self):
+        self.app.transfer(self.checking, self.savings, "40", "", "To savings")
+        self.assertEqual(self.checking.balance, Money.from_str("60.00"))
+        self.assertEqual(self.savings.balance, Money.from_str("40.00"))
+        self.save.assert_called_once_with(self.book)
+
+    def test_refused_transfer_moves_nothing(self):
+        with self.assertRaises(InsufficientFundsError):
+            self.app.transfer(self.checking, self.savings, "500", "", "Too much")
+        self.assertEqual(self.checking.balance, Money.from_str("100.00"))
+        self.assertEqual(self.savings.balance, Money.zero())
+        self.save.assert_not_called()
+
+    def test_transfer_to_the_same_account_is_refused(self):
+        with self.assertRaises(ValidationError):
+            self.app.transfer(self.checking, self.checking, "10", "", "Loop")
+        self.save.assert_not_called()
+
+    def test_transfer_button_needs_two_accounts(self):
+        self.book.archive_account(self.savings.id)
+        self.app.refresh()
+        self.app.tree.selection_set(str(self.checking.id))
+        with patch("ledger.gui.app.messagebox.showerror") as showerror:
+            self.app.show_transfer()
+        showerror.assert_called_once()
+
+    def test_rename_updates_the_row_and_saves(self):
+        self.app.rename_account(self.checking, "Main")
+        self.assertEqual(self.checking.name, "Main")
+        self.assertEqual(self.app.tree.item(str(self.checking.id), "values")[0], "Main")
+        self.save.assert_called_once_with(self.book)
+
+    def test_rename_to_a_taken_name_changes_nothing(self):
+        with self.assertRaises(DuplicateAccountError):
+            self.app.rename_account(self.checking, "rainy day")
+        self.assertEqual(self.checking.name, "Everyday")
+        self.save.assert_not_called()
+
+
+class TestArchiveRestore(GuiTestCase):
+    def show_archived(self):
+        """Tick the "Show archived accounts" box, as a click would."""
+        self.app.show_archived.set(True)
+        self.app.change_view()
+
+    def test_archive_empty_account_removes_its_row_and_saves(self):
+        self.app.archive_account(self.savings)
+        self.assertIn(self.savings, self.book.archived_accounts)
+        self.assertEqual(self.app.tree.get_children(), (str(self.checking.id),))
+        self.save.assert_called_once_with(self.book)
+
+    def test_archive_account_with_money_is_refused(self):
+        with self.assertRaises(AccountNotEmptyError):
+            self.app.archive_account(self.checking)
+        self.assertIn(self.checking, self.book.accounts)
+        self.save.assert_not_called()
+
+    def test_archived_view_lists_only_archived_accounts(self):
+        self.book.archive_account(self.savings.id)
+        self.show_archived()
+        self.assertEqual(self.app.tree.get_children(), (str(self.savings.id),))
+        self.app.tree.selection_set(str(self.savings.id))
+        self.assertIs(self.app.selected_account(), self.savings)
+
+    def test_restore_brings_the_account_back(self):
+        self.book.archive_account(self.savings.id)
+        self.show_archived()
+        self.app.restore_account(self.savings)
+        self.assertIn(self.savings, self.book.accounts)
+        self.assertEqual(self.app.tree.get_children(), ())
+        self.save.assert_called_once_with(self.book)
+
+    def test_restore_under_a_new_name_after_a_clash(self):
+        self.book.archive_account(self.savings.id)
+        self.book.add_account(SavingsAccount("Rainy Day", OPENED))
+        with self.assertRaises(DuplicateAccountError):
+            self.app.restore_account(self.savings)
+        self.app.restore_account(self.savings, "Old Rainy Day")
+        self.assertEqual(self.savings.name, "Old Rainy Day")
+        self.assertIn(self.savings, self.book.accounts)
+
+    def test_refused_new_name_puts_the_old_name_back(self):
+        self.book.archive_account(self.savings.id)
+        self.book.add_account(SavingsAccount("Rainy Day", OPENED))
+        with self.assertRaises(DuplicateAccountError):
+            self.app.restore_account(self.savings, "everyday")
+        self.assertEqual(self.savings.name, "Rainy Day")
+        self.assertIn(self.savings, self.book.archived_accounts)
         self.save.assert_not_called()
 
 
