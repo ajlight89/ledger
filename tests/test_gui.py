@@ -4,6 +4,7 @@ import tkinter as tk
 import unittest
 from datetime import date
 from decimal import Decimal
+from pathlib import Path
 from unittest.mock import patch
 
 from ledger.core.accounts import CheckingAccount, CreditCardAccount, SavingsAccount
@@ -11,15 +12,23 @@ from ledger.core.book import Book
 from ledger.core.categories import Category
 from ledger.core.exceptions import (
     AccountNotEmptyError,
+    CsvFormatError,
     DuplicateAccountError,
     InsufficientFundsError,
     InvalidAmountError,
     ValidationError,
 )
 from ledger.core.money import Money
-from ledger.gui.app import LedgerApp, parse_date, parse_money, parse_rate
+from ledger.gui.app import (
+    LedgerApp,
+    parse_date,
+    parse_money,
+    parse_month,
+    parse_rate,
+)
 
 OPENED = date(2026, 10, 1)
+SAMPLE = Path(__file__).parent.parent / "sample.csv"
 
 
 class TestParsing(unittest.TestCase):
@@ -48,6 +57,17 @@ class TestParsing(unittest.TestCase):
     def test_parse_date_refuses_other_formats(self):
         with self.assertRaises(ValidationError):
             parse_date("2026-11-05")
+
+    def test_parse_month_blank_means_this_month(self):
+        today = date.today()
+        self.assertEqual(parse_month(""), (today.year, today.month))
+
+    def test_parse_month_reads_month_year(self):
+        self.assertEqual(parse_month("10/2026"), (2026, 10))
+
+    def test_parse_month_refuses_other_formats(self):
+        with self.assertRaises(ValidationError):
+            parse_month("2026-10")
 
 
 class GuiTestCase(unittest.TestCase):
@@ -253,6 +273,52 @@ class TestArchiveRestore(GuiTestCase):
         self.assertEqual(self.savings.name, "Rainy Day")
         self.assertIn(self.savings, self.book.archived_accounts)
         self.save.assert_not_called()
+
+
+class TestImportAndReports(GuiTestCase):
+    def test_import_adds_rows_and_saves(self):
+        self.assertEqual(self.app.import_csv(self.checking, SAMPLE), 15)
+        self.assertEqual(self.checking.balance, Money.from_str("1560.65"))
+        self.save.assert_called_once_with(self.book)
+
+    def test_second_import_adds_nothing_and_does_not_save(self):
+        self.app.import_csv(self.checking, SAMPLE)
+        self.assertEqual(self.app.import_csv(self.checking, SAMPLE), 0)
+        self.save.assert_called_once()
+
+    def test_file_without_the_columns_is_refused(self):
+        # This test file itself is not a bank CSV, so it has no Date column.
+        with self.assertRaises(CsvFormatError):
+            self.app.import_csv(self.checking, Path(__file__))
+        self.save.assert_not_called()
+
+    def test_statement_text_lists_the_month(self):
+        text = self.app.statement_text(self.checking, 2026, 10)
+        self.assertIn("Everyday: October 2026", text)
+        self.assertIn("Opening balance: $0.00", text)
+        self.assertIn("Pay", text)
+        self.assertIn("Closing balance: $100.00", text)
+
+    def test_statement_text_for_an_empty_month(self):
+        text = self.app.statement_text(self.checking, 2026, 9)
+        self.assertIn("No transactions this month.", text)
+
+    def test_statement_works_for_an_archived_account(self):
+        self.book.archive_account(self.savings.id)
+        text = self.app.statement_text(self.savings, 2026, 10)
+        self.assertIn("Rainy Day: October 2026", text)
+
+    def test_spending_text_totals_each_category(self):
+        self.checking.withdraw(
+            Money.from_str("25.00"), date(2026, 10, 5), Category.DINING_OUT, "Pizza"
+        )
+        text = self.app.spending_text(2026, 10)
+        self.assertIn("Dining Out", text)
+        self.assertIn("$25.00", text)
+        self.assertIn("Total", text)
+
+    def test_spending_text_for_a_month_without_spending(self):
+        self.assertIn("No spending this month.", self.app.spending_text(2026, 9))
 
 
 if __name__ == "__main__":
