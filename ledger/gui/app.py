@@ -13,7 +13,7 @@ from ledger.core import storage
 from ledger.core.accounts import CheckingAccount, CreditCardAccount, SavingsAccount
 from ledger.core.book import Book
 from ledger.core.categories import Category
-from ledger.core.exceptions import LedgerError, ValidationError
+from ledger.core.exceptions import DuplicateAccountError, LedgerError, ValidationError
 from ledger.core.money import Money
 
 # Account.TYPE (the name saved in the data file) -> the label shown in the list.
@@ -100,18 +100,33 @@ class LedgerApp:
         # window gets smaller; the list then takes whatever space is left.
         buttons = ttk.Frame(root, padding=(10, 0, 10, 10))
         buttons.pack(side="bottom", fill="x")
-        ttk.Button(buttons, text="Open account", command=self.show_open_account).pack(
-            side="left"
+        # Buttons for active accounts, in the same order as the text menu.
+        self.active_buttons = []
+        for text, command in (
+            ("Open account", self.show_open_account),
+            ("Deposit", self.show_deposit),
+            ("Withdraw", self.show_withdraw),
+            ("Transfer", self.show_transfer),
+            ("Rename", self.show_rename),
+            ("Archive", self.show_archive),
+        ):
+            button = ttk.Button(buttons, text=text, command=command)
+            button.pack(side="left", padx=(0, 5))
+            self.active_buttons.append(button)
+        self.restore_button = ttk.Button(
+            buttons, text="Restore", command=self.show_restore
         )
-
-        ttk.Button(buttons, text="Deposit", command=self.show_deposit).pack(
-            side="left", padx=(5, 0)
-        )
-        ttk.Button(buttons, text="Withdraw", command=self.show_withdraw).pack(
-            side="left", padx=(5, 0)
-        )
-
+        self.restore_button.pack(side="left", padx=(0, 5))
         ttk.Button(buttons, text="Exit", command=root.destroy).pack(side="right")
+
+        # Ticking the box switches the list to archived accounts.
+        self.show_archived = tk.BooleanVar(value=False)
+        ttk.Checkbutton(
+            root,
+            text="Show archived accounts",
+            variable=self.show_archived,
+            command=self.change_view,
+        ).pack(side="top", anchor="w", padx=10, pady=(10, 0))
 
         # show="headings" hides the tree's own "#0" column, which keeps a
         # left indent for expand arrows that a flat list doesn't need.
@@ -130,13 +145,13 @@ class LedgerApp:
         self.tree.tag_configure("odd", background="#f0f0f0")
         self.tree.pack(fill="both", expand=True, padx=10, pady=10)
 
-        self.refresh()
+        self.change_view()
 
     def refresh(self) -> None:
         """Clear the list and fill it again, keeping the selected row selected."""
         selected = self.tree.selection()
         self.tree.delete(*self.tree.get_children())
-        for row, account in enumerate(self.book.accounts):
+        for row, account in enumerate(self.shown_accounts()):
             stripe = ("odd",) if row % 2 == 1 else ()
             self.tree.insert(
                 "",
@@ -153,12 +168,32 @@ class LedgerApp:
             if self.tree.exists(iid):  # gone if the account was archived
                 self.tree.selection_set(iid)
 
+    def shown_accounts(self) -> tuple:
+        """The accounts the list shows: archived ones if the box is ticked."""
+        if self.show_archived.get():
+            return self.book.archived_accounts
+        return self.book.accounts
+
+    def change_view(self) -> None:
+        """Switch the list, and turn on only the buttons that fit the view."""
+        archived = self.show_archived.get()
+        for button in self.active_buttons:
+            set_enabled(button, not archived)
+        set_enabled(self.restore_button, archived)
+        self.refresh()
+
     def selected_account(self):
         """Return the account selected in the list; ValidationError if none."""
         selection = self.tree.selection()
         if not selection:
             raise ValidationError("Select an account in the list first.")
-        return self.book.get_account(UUID(selection[0]))
+        selected_id = UUID(selection[0])
+        for account in self.shown_accounts():
+            if account.id == selected_id:
+                return account
+        # Every row comes from shown_accounts(), so this is never reached;
+        # it keeps the promise that the method returns an account or raises.
+        raise ValidationError("Select an account in the list first.")
 
     def show_open_account(self) -> None:
         """Show the Open account dialog."""
@@ -173,6 +208,38 @@ class LedgerApp:
     def show_withdraw(self) -> None:
         """Show the Withdraw dialog for the selected account."""
         TransactionDialog(self, self.selected_account(), "Withdraw")
+
+    @shows_errors
+    def show_transfer(self) -> None:
+        """Show the Transfer dialog; From starts as the selected account, if any."""
+        if len(self.book.accounts) < 2:
+            raise ValidationError("A transfer needs at least two accounts.")
+        source = self.selected_account() if self.tree.selection() else None
+        TransferDialog(self, source)
+
+    @shows_errors
+    def show_rename(self) -> None:
+        """Show the Rename dialog for the selected account."""
+        RenameDialog(self, self.selected_account())
+
+    @shows_errors
+    def show_archive(self) -> None:
+        """Ask first, then archive the selected account."""
+        account = self.selected_account()
+        question = f"Archive {account.name}? It can be restored later."
+        if messagebox.askyesno("Ledger", question, parent=self.root):
+            self.archive_account(account)
+
+    @shows_errors
+    def show_restore(self) -> None:
+        """Restore the selected archived account, offering a new name if needed."""
+        account = self.selected_account()
+        try:
+            self.restore_account(account)
+        except DuplicateAccountError as err:
+            question = f"{err}\n\nRestore it under a different name?"
+            if messagebox.askyesno("Ledger", question, parent=self.root):
+                RestoreDialog(self, account)
 
     def open_account(
         self, kind: str, name: str, overdraft: bool, rate_text: str, limit_text: str
@@ -208,6 +275,45 @@ class LedgerApp:
         amount = parse_money(amount_text)
         on = parse_date(date_text)
         method(amount, on, Category(label), description)
+        storage.save_book(self.book)
+        self.refresh()
+
+    def transfer(
+        self, source, destination, amount_text: str, date_text: str, description: str
+    ) -> None:
+        """Move money between two active accounts, then save."""
+        amount = parse_money(amount_text)
+        on = parse_date(date_text)
+        self.book.transfer(amount, source.id, destination.id, on, description)
+        storage.save_book(self.book)
+        self.refresh()
+
+    def rename_account(self, account, new_name: str) -> None:
+        """Rename the account, then save; the core refuses a taken or blank name."""
+        self.book.rename_account(account.id, new_name)
+        storage.save_book(self.book)
+        self.refresh()
+
+    def archive_account(self, account) -> None:
+        """Archive the account, then save; the core refuses unless it is $0.00."""
+        self.book.archive_account(account.id)
+        storage.save_book(self.book)
+        self.refresh()
+
+    def restore_account(self, account, new_name: str | None = None) -> None:
+        """Restore an archived account, under new_name if one is given.
+
+        If anything is refused, the account keeps its old name, so no
+        half-made change is left in memory (the same rule as the menu).
+        """
+        original_name = account.name
+        try:
+            if new_name is not None:
+                account.name = new_name
+            self.book.restore_account(account.id)
+        except LedgerError:
+            account.name = original_name
+            raise
         storage.save_book(self.book)
         self.refresh()
 
@@ -388,6 +494,98 @@ class TransactionDialog(Dialog):
             self.category_var.get(),
             self.description_var.get(),
         )
+
+
+class TransferDialog(Dialog):
+    """Ask which accounts the money moves between, how much, when, and why."""
+
+    def __init__(self, app: LedgerApp, source=None) -> None:
+        self.source = source
+        # Active names are unique, so each name leads to exactly one account.
+        self.accounts = {a.name: a for a in app.book.accounts}
+        super().__init__(app, "Transfer")
+
+    def build(self) -> None:
+        self.from_var = tk.StringVar(value=self.source.name if self.source else "")
+        self.to_var = tk.StringVar()
+        self.amount_var = tk.StringVar()
+        self.date_var = tk.StringVar(value=f"{date.today():%m/%d/%Y}")
+        self.description_var = tk.StringVar()
+
+        names = list(self.accounts)
+        from_box = ttk.Combobox(
+            self.body,
+            textvariable=self.from_var,
+            values=names,
+            state="readonly",
+            width=28,
+        )
+        self.add_row(0, "From account:", from_box)
+        to_box = ttk.Combobox(
+            self.body,
+            textvariable=self.to_var,
+            values=names,
+            state="readonly",
+            width=28,
+        )
+        self.add_row(1, "To account:", to_box)
+        # Start where the next choice is needed.
+        if self.source:
+            to_box.focus_set()
+        else:
+            from_box.focus_set()
+        self.add_row(2, "Amount:", ttk.Entry(self.body, textvariable=self.amount_var))
+        self.add_row(
+            3, "Date (MM/DD/YYYY):", ttk.Entry(self.body, textvariable=self.date_var)
+        )
+        self.add_row(
+            4,
+            "Description:",
+            ttk.Entry(self.body, textvariable=self.description_var),
+        )
+
+    def submit(self) -> None:
+        # dict.get returns None for a name that isn't there (nothing chosen yet).
+        source = self.accounts.get(self.from_var.get())
+        destination = self.accounts.get(self.to_var.get())
+        if source is None or destination is None:
+            raise ValidationError("Choose both accounts.")
+        self.app.transfer(
+            source,
+            destination,
+            self.amount_var.get(),
+            self.date_var.get(),
+            self.description_var.get(),
+        )
+
+
+class RenameDialog(Dialog):
+    """Ask for an account's new name, starting from its current one."""
+
+    TITLE = "Rename"
+
+    def __init__(self, app: LedgerApp, account) -> None:
+        self.account = account
+        super().__init__(app, f"{self.TITLE}: {account.name}")
+
+    def build(self) -> None:
+        self.name_var = tk.StringVar(value=self.account.name)
+        name_entry = ttk.Entry(self.body, textvariable=self.name_var, width=30)
+        self.add_row(0, "New name:", name_entry)
+        name_entry.focus_set()
+        name_entry.select_range(0, "end")  # typing replaces the old name
+
+    def submit(self) -> None:
+        self.app.rename_account(self.account, self.name_var.get())
+
+
+class RestoreDialog(RenameDialog):
+    """The same window as RenameDialog, but OK restores under the new name."""
+
+    TITLE = "Restore under a new name"
+
+    def submit(self) -> None:
+        self.app.restore_account(self.account, self.name_var.get())
 
 
 def main() -> None:
