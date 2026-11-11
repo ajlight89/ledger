@@ -1,6 +1,6 @@
 """Exceptions raised by the core when an operation cannot be completed.
 
-Every exception here subclasses LedgerError, so the GUI can catch that one
+Every exception here subclasses LedgerError, so the front end can catch that one
 class and show the message. Messages are written for the end user.
 """
 
@@ -35,6 +35,10 @@ class AccountNotFoundError(LedgerError):
 
 class DuplicateAccountError(LedgerError):
     """An account with the same name already exists."""
+
+
+class AccountNotEmptyError(LedgerError):
+    """An account still has money in it (or owes money) and cannot be archived."""
 
 
 class ValidationError(LedgerError):
