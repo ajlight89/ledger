@@ -2,7 +2,7 @@
 
 import logging
 
-__version__ = "0.1.0"
+__version__ = "1.0.0"
 
 # Stay quiet until a front end calls logging.basicConfig(). Without this,
 # Python prints every logged warning to the terminal, even during tests.
